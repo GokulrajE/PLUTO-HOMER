@@ -62,10 +62,10 @@ public class welcomSceneHandler : MonoBehaviour
     void Start()
     {
         AppData.fileCreation.createFileStructure();
-        filepath_user = AppData.fileCreation.filePath_UserData ;
-        filepath_session = AppData.fileCreation.filePath_SessionData ;
+        filepath_user = AppData.fileCreation.filePathUserData ;
+        filepath_session = AppData.fileCreation.filePathSessionData ;
         //statusText.text = "connecting..";
-        ConnectToRobot.Connect("COM5");
+        ConnectToRobot.Connect(AppData.comPort);
 
     }
 
@@ -75,12 +75,12 @@ public class welcomSceneHandler : MonoBehaviour
         
 
         // 
-        if ((AppData.fileCreation.filePath_SessionData != null && !piChartUpdated)&& AppData.fileCreation.filePath_UserData!=null)
+        if ((AppData.fileCreation.filePathSessionData != null && !piChartUpdated)&& AppData.fileCreation.filePathUserData!=null)
         {
             dataTableConfig = new DataTable();
             dataTablesession = new DataTable();
-            LoadCSV(AppData.fileCreation.filePath_SessionData, dataTablesession);
-            LoadCSV(AppData.fileCreation.filePath_UserData, dataTableConfig);
+            LoadCSV(AppData.fileCreation.filePathSessionData, dataTablesession);
+            LoadCSV(AppData.fileCreation.filePathUserData, dataTableConfig);
             CalculateMovTimePerDayWithLinq();
             updateUserData();
             UpdatePieChart();
