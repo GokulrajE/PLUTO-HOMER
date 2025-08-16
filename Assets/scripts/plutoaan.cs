@@ -88,7 +88,7 @@ public class PlutoAANController
     private float[] _newAanTarget;
     private float lastCheckedPosition = float.NaN;
     private Stopwatch positionStopwatch = new Stopwatch();
-    private const int NO_MOVEMENT_THRESHOLD = 2000; // 2 seconds in ms
+    private const int NO_MOVEMENT_THRESHOLD = 1500; // 1.5 seconds in ms
 
     // AAN control bound adaptation related variables.
     public float currentCtrlBound { private set; get; }
@@ -182,11 +182,45 @@ public class PlutoAANController
         }
         PlutoAanLogger.LogInfo($"Currrent Control Bound: {currentCtrlBound}");
     }
+    
+    private bool CheckNoMovement(float actual)
+    {
+        if (float.IsNaN(lastCheckedPosition))
+            lastCheckedPosition = actual;
+
+        if (Math.Abs(actual - lastCheckedPosition) < 0.01f)
+        {
+            if (!positionStopwatch.IsRunning)
+                positionStopwatch.Start();
+
+            if (positionStopwatch.ElapsedMilliseconds >= NO_MOVEMENT_THRESHOLD)
+            {
+                state = PlutoAANState.AssistToTarget;
+                        GenerateAssistToTargetAanTarget(actual, true);
+                        PlutoAanLogger.LogInfo(
+                            $"Assist due to no movement for 2 sec |{state} | " +
+                            $"[{_newAanTarget[0]}, {_newAanTarget[1]}, {_newAanTarget[2]}, {_newAanTarget[3]}, {_newAanTarget[4]}]"
+                        );
+                positionStopwatch.Reset();
+                return true; // Assist triggered
+            }
+        }
+        else
+        {
+            positionStopwatch.Reset();
+        }
+
+        lastCheckedPosition = actual;
+        return false;
+    }
+
 
     public void Update(float actual, float delT, bool trialDone)
     {
         // Reset state change.
         stateChange = false;
+
+        UnityEngine.Debug.Log($"state : {state}");
 
         // Do nothing if the state is None.
         if (state == PlutoAANState.None) return;
@@ -236,39 +270,13 @@ public class PlutoAANController
                     return;
                 }
                 // Check if the target is reached.
-                if (positionStopwatch.ElapsedMilliseconds < NO_MOVEMENT_THRESHOLD)
-                {
-                        if (IsTargetInArom()) return;
-                }
+                // if (positionStopwatch.ElapsedMilliseconds < NO_MOVEMENT_THRESHOLD)
+                // {
+                //         //if (IsTargetInArom()) return;
+                // }
+
+                if (CheckNoMovement(actual)) return;
                 
-
-                    // No movement detection
-                if (float.IsNaN(lastCheckedPosition))
-                    lastCheckedPosition = actual; // first run init
-
-                if (Math.Abs(actual - lastCheckedPosition) < 0.01f)
-                {
-                    if (!positionStopwatch.IsRunning)
-                        positionStopwatch.Start();
-
-                    if (positionStopwatch.ElapsedMilliseconds >= NO_MOVEMENT_THRESHOLD)
-                    {
-
-                        state = PlutoAANState.AssistToTarget;
-                        GenerateAssistToTargetAanTarget(actual, true);
-                        PlutoAanLogger.LogInfo(
-                            $"Assist due to no movement for 2 sec | {_prevstate} -> {state} | " +
-                            $"[{_newAanTarget[0]}, {_newAanTarget[1]}, {_newAanTarget[2]}, {_newAanTarget[3]}, {_newAanTarget[4]}]"
-                        );
-                        positionStopwatch.Reset();
-                        return;
-                    }
-                }
-                else
-                {
-                    positionStopwatch.Reset();
-                }
-                lastCheckedPosition = actual;
 
                 // Check if the AROM boundary is reached.
                 int _dir = Math.Sign(targetPosition - initialPosition);
@@ -283,6 +291,8 @@ public class PlutoAANController
                 break;
             case PlutoAANState.RelaxToArom:
                 // Check if AROM has not been reached.
+                if (CheckNoMovement(actual)) return;
+
                 if (IsActualInArom(actual))
                 {
                     // AROM reached.
