@@ -86,6 +86,9 @@ public class PlutoAANController
     public Queue<float> timeQ { private set; get; }
     public float trialTime { private set; get; }
     private float[] _newAanTarget;
+    private float lastCheckedPosition = float.NaN;
+    private Stopwatch positionStopwatch = new Stopwatch();
+    private const int NO_MOVEMENT_THRESHOLD = 2000; // 2 seconds in ms
 
     // AAN control bound adaptation related variables.
     public float currentCtrlBound { private set; get; }
@@ -233,7 +236,40 @@ public class PlutoAANController
                     return;
                 }
                 // Check if the target is reached.
-                if (IsTargetInArom()) return;
+                if (positionStopwatch.ElapsedMilliseconds < NO_MOVEMENT_THRESHOLD)
+                {
+                        if (IsTargetInArom()) return;
+                }
+                
+
+                    // No movement detection
+                if (float.IsNaN(lastCheckedPosition))
+                    lastCheckedPosition = actual; // first run init
+
+                if (Math.Abs(actual - lastCheckedPosition) < 0.01f)
+                {
+                    if (!positionStopwatch.IsRunning)
+                        positionStopwatch.Start();
+
+                    if (positionStopwatch.ElapsedMilliseconds >= NO_MOVEMENT_THRESHOLD)
+                    {
+
+                        state = PlutoAANState.AssistToTarget;
+                        GenerateAssistToTargetAanTarget(actual, true);
+                        PlutoAanLogger.LogInfo(
+                            $"Assist due to no movement for 2 sec | {_prevstate} -> {state} | " +
+                            $"[{_newAanTarget[0]}, {_newAanTarget[1]}, {_newAanTarget[2]}, {_newAanTarget[3]}, {_newAanTarget[4]}]"
+                        );
+                        positionStopwatch.Reset();
+                        return;
+                    }
+                }
+                else
+                {
+                    positionStopwatch.Reset();
+                }
+                lastCheckedPosition = actual;
+
                 // Check if the AROM boundary is reached.
                 int _dir = Math.Sign(targetPosition - initialPosition);
                 float _arompos = (actual - aRom[0]) / (aRom[1] - aRom[0]);
