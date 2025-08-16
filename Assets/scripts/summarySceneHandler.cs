@@ -1,9 +1,5 @@
-
-using Newtonsoft.Json.Linq;
 using System;
-using System.Collections;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -40,7 +36,7 @@ public class summarySceneHandler : MonoBehaviour
         title = button.gameObject.name.ToUpper();
         Debug.Log("button name:" + title);
         int n = Array.IndexOf(PlutoComm.MECHANISMS, title);
-        title = PlutoComm.MECHANISMSTEXT[n];
+        title = PlutoComm.MECHANISMSTEXT[n-1];
         sessionDataHandler.CalculateMovTimeForMechanism(button.gameObject.name.ToUpper());
         UpdateChartData();
        
@@ -58,6 +54,17 @@ public class summarySceneHandler : MonoBehaviour
                     UnityEditor.EditorApplication.isPlaying = false; 
         #endif
         });
+    }
+    public void LoginScene()
+    {
+        //     AppData.Instance.userData = null;
+        //    // PlutoComm.stopSensorStream();
+        AppData.Instance.Reset();
+        SceneManager.LoadScene("LOGIN");
+        Debug.Log("id after reset:" + AppData.Instance.userID);
+        Debug.Log("id afterrrr reset :" + (AppData.Instance.userData == null));
+    //    AppData.Instance.setUser(null);
+        //     if(AppData.Instance.userData == null && AppData.Instance.userID == null) SceneManager.LoadScene("LOGIN");
     }
 
     //To initialize the barchart with whole data of moveTime per day

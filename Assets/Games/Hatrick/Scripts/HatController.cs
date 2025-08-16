@@ -1,128 +1,66 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEngine;
 
 public class HatController : MonoBehaviour
 {
-    public Camera cam;
-
     public float maxwidth;
-    float targetX;
-    public static float tempRobot, tempBird;
-    public static int FlipAngle = -1;
     public static float playSize;
+    float position = 0f;
 
+    public Camera cam;
     public AudioSource gamesound;
     public AudioClip win;
     public AudioClip loose;
-    float[] rom;
-    private Vector3 previousPlayerPosition;
-    private float playerMovementTime = 0f;
-    private Coroutine movementCoroutine;
-    
+    private bool side, mech;
+
     void Start()
     {
-
-        if (cam == null)
-        {
-            cam = Camera.main;
-        }
         Vector3 UpperCorner = new Vector3(Screen.width, Screen.height, 0);
         float hatwidth = GameObject.Find("HatFrontSprite").GetComponent<Renderer>().bounds.extents.x;
+        // MovementTracker.Initialize(this, this.transform.position);
+
         Vector3 targetWidth = cam.ScreenToWorldPoint(UpperCorner);
         maxwidth = targetWidth.x - hatwidth;
-        //playSize = maxwidth * 0.9f;
         playSize = maxwidth * 1f;
+        side = AppData.Instance.IsTrainingSide("RIGHT");
+        mech = AppData.Instance.selectedMechanism.IsMechanism("HOC");
 
     }
 
     void Update()
     {
-        targetX = HT_spawnTargets1.instance.Angle2Screen(PlutoComm.angle, AppData.Instance.selectedMechanism.currRom.promMin, AppData.Instance.selectedMechanism.currRom.promMax);
-        targetX = Mathf.Clamp(targetX, -maxwidth, maxwidth);
-                                      
-        //checkPlayerMovement();
+        position = HatGameController.Instance.AngleToScreen(PlutoComm.angle);
 
-        if (gameData.moving) 
-        { 
-            gameData.events = Array.IndexOf(gameData.hatEvents, "moving");
-        }
-        Vector2 targetPosition = new Vector2(targetX, this.transform.position.y);
+        // position = (AppData.Instance.IsTrainingSide("RIGHT") && AppData.Instance.selectedMechanism.IsMechanism("HOC")) ? HatGameController.Instance.AngleToScreen(-PlutoComm.angle):HatGameController.Instance.AngleToScreen((PlutoComm.angle));
+        // MovementTracker.UpdatePosition( this.transform.position);
+
+        Vector2 targetPosition = new Vector2(position, this.transform.position.y);
         gameObject.GetComponent<Rigidbody2D>().MovePosition(targetPosition);
-        gameData.moving=true;
-    }
-    private void checkPlayerMovement()
-    {
-        Vector3 currentPlayerPosition = transform.position;
-        float playerDistanceMoved = Vector3.Distance(currentPlayerPosition, previousPlayerPosition); // Calculate the distance moved by the player
-        if (playerDistanceMoved > 0.001f)
-        {
-            if (movementCoroutine == null)
-            {
-                movementCoroutine = StartCoroutine(trackMovementTime());
-            }
-        }
-        else
-        {
-            if (movementCoroutine != null)
-            {
-                StopCoroutine(movementCoroutine);
-                movementCoroutine = null;
-            }
-        }
-        previousPlayerPosition = currentPlayerPosition;
     }
 
-    private IEnumerator trackMovementTime()
-    {
-        while (true)
-        {
-            playerMovementTime += Time.deltaTime;
-            gameData.moveTime = playerMovementTime;
-            yield return null;
-        }
-    }
     void OnTriggerEnter2D(Collider2D collision)
     {
-
         if (collision.gameObject.tag == "Target")
         {
             gamesound.clip = win;
             gamesound.Play();
-            gameData.moving = false;
-            gameData.events = Array.IndexOf(gameData.hatEvents, "BallCaught");
-            gameData.gameScore++;
-            HT_spawnTargets1.instance.reached = true;
-            HatGameController.instance.balldestroyed = true;
-            HatGameController.instance.targetSpwan = false;
-            HatGameController.instance.SpawnTarget(HatTrickGame.Instance.gameSpeed.Value);
             Destroy(collision.gameObject);
+            HatGameController.Instance.BallCaught();
         }
-
-        if (collision.gameObject.tag == "Target1")
-        {
-            gamesound.clip = loose;
-            gamesound.Play();
-            gameData.moving = false;
-            gameData.events = Array.IndexOf(gameData.hatEvents, "BombCaught");
-            gameData.gameScore--;
-            HT_spawnTargets1.instance.reached = true;
-            HatGameController.instance.balldestroyed = true;
-            HatGameController.instance.targetSpwan = false;
-            HatGameController.instance.SpawnTarget(HatTrickGame.Instance.gameSpeed.Value);
-            Destroy(collision.gameObject);
-        }
-
     }
 
-    void OnCollisionEnter2D(Collision2D collision)
+    private float movementControl(float targetX)
     {
-        Debug.Log("Collided");
-    }
-
-    public float Angle2Screen(float angle)
-    {
-        return HT_spawnTargets1.instance.Angle2Screen(angle, AppData.Instance.selectedMechanism.currRom.promMin, AppData.Instance.selectedMechanism.currRom.promMax);
+        float val;
+        if (Input.GetKey(KeyCode.RightArrow)) val = Math.Abs(targetX) <= 8 ? targetX + 0.2f : targetX;
+        else if (Input.GetKey(KeyCode.LeftArrow)) val = Math.Abs(targetX) <= 8 ? targetX - 0.2f : targetX;
+        else val = targetX;
+        // Clip value to +/-8.
+        if (val > 8) val = 8;
+        else if (val < -8) val = -8;
+        return val;
     }
 }

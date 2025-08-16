@@ -1,18 +1,8 @@
 using System;
 using System.Linq;
 using System.IO;
-using System.Collections;
-using System.Collections.Generic;
 using System.Data;
-using UnityEditor.PackageManager;
 using UnityEngine;
-using System.Globalization;
-using System.Data;
-using System.Linq;
-using UnityEditor.VersionControl;
-using UnityEngine.SceneManagement;
-using Newtonsoft.Json.Bson;
-using PlutoNeuroRehabLibrary;
 using System.Text;
 
 
@@ -28,7 +18,14 @@ public struct DaySummary
 
 public static class DataManager
 {
-    public static readonly string basePath = Application.dataPath + "/data";
+
+    public static string userIdPath = 
+        AppData.Instance.userID != null 
+        ? Path.Combine(Application.dataPath, "data", AppData.Instance.userID) 
+        : Application.dataPath;
+
+    public static  string basePath = FixPath(Path.Combine(userIdPath, "data"));
+
     static string directoryPathConfig;
     public static string sessionPath { get; private set; }
     public static string gamePath { get; private set; }
@@ -38,39 +35,80 @@ public static class DataManager
     public static string rawPath { get; private set; }
     public static string romPath { get; private set; }
     public static string logPath { get; private set; }
+    public static string controlGainPath{ get; private set; }
 
-    public static readonly string configFile = basePath + "/configdata.csv";
+    public static string configFile = Path.Combine(basePath, "configdata.csv");
     public static string sessionFile { get; private set; }
+
+    
 
     // Sessions file definitions.
     public static string[] SESSIONFILEHEADER = new string[] {
         "SessionNumber", "DateTime",
-        "TrialNumberDay", "TrialNumberSession", "TrialType", "TrialStartTime", "TrialStopTime", "TrialDataFileLocation",
+        "TrialNumberDay", "TrialNumberSession", "TrialType", "TrialStartTime", "TrialStopTime", "TrialRawDataFile", 
+        "Mechanism", 
         "GameName", "GameParameter", "GameSpeed",  
-        "AssistMode", "AssistModeParameters",
-        "DesiredSuccessRate", "SuccessRate", "MoveTime"
+        "AssistMode", "DesiredSuccessRate", "SuccessRate", "CurrentControlBound", "NextControlBound","MoveTime"
     };
 
+    // Raw data header.    
+    public static string[] RAWFILEHEADER = new string[] {
+        "DeviceRunTime", "PacketNumber", "Status", "DataType", "ErrorStatus", 
+        "ControlType", "Calibration",  "Mechanism", 
+        "Button", "Angle", "Torque", "Desired", "Control", "ControlBound", "ControlDir", "Target", 
+        "Error", "ErrorDiff", "ErrorSum",
+        "GamePlayerX", "GamePlayerY", "GameTargetX", "GameTargetY", "GameState",
+        "AanTargetPosition", "AanInitialPosition", "AanState"
+    };
+
+    // Date format strict.
+    public static string DATEFORMAT = "yyyy-MM-dd HH:mm:ss";
+
     // Functions to generate file names.
-    public static string GetAanAdaptFileName(string mechanism) => Path.Combine(aanAdaptPath, $"{mechanism}-adaptaan.csv");
-    public static string GetAanExecFileName(string mechanism) => Path.Combine(aanExecPath, $"{mechanism}-execaan.csv");
-    public static string GetGameFileName(string game) => Path.Combine(gamePath, $"{game}-gameparams.csv");
-    public static string GetMechFileName(string mechanism) => Path.Combine(mechPath, $"{mechanism}-mechparams.csv");
-    public static string GetRawFileName(string game, string mechanism, string datetime) => Path.Combine(rawPath, $"{datetime}-{game}-{mechanism}-raw.csv");
-    public static string GetRomFileName(string mechanism) => Path.Combine(romPath, $"{mechanism}-rom.csv");
+    public static string GetAanAdaptFileName(string mechanism) => FixPath(Path.Combine(aanAdaptPath, $"{mechanism}-adaptaan.csv"));
+    public static string GetAanExecFileName(string mechanism) => FixPath(Path.Combine(aanExecPath, $"{mechanism}-execaan.csv"));
+    public static string GetGameFileName(string game) => FixPath(Path.Combine(gamePath, $"{game}-gameparams.csv"));
+    public static string GetMechFileName(string mechanism) => FixPath(Path.Combine(mechPath, $"{mechanism}-mechparams.csv"));
+    public static string GetMechControlGainFileName(string mechanism) => FixPath(Path.Combine(controlGainPath, $"{mechanism}-controlgain.csv"));
+    public static string GetRawFileName(
+        string game,
+        string mechanism,
+        string datetime) => FixPath(Path.Combine(rawPath, $"{datetime}-{game}-{mechanism}-raw.csv"));
+    public static string GetRomFileName(string mechanism) => FixPath(Path.Combine(romPath, $"{mechanism}-rom.csv"));
+    public static string GetTrialRawDataFileName(
+        int sessNo, 
+        int trialNo,
+        string game,
+        string mechanism) => FixPath(Path.Combine(rawPath, $"raw-sess{sessNo:D2}-trial{trialNo:D3}-{game}-{mechanism}.csv"));
+        // string mechanism) => FixPath(Path.Combine(rawPath, $"session-{sessNo}", $"raw-sess{sessNo:D2}-trial{trialNo:D3}-{game}-{mechanism}.csv"));
+    public static string GetTrialAanExecDataFileName(
+        int sessNo,
+        int trialNo,
+        string game,
+        string mechanism) => FixPath(Path.Combine(rawPath, $"aanexec-sess{sessNo:D2}-trial{trialNo:D3}-{game}-{mechanism}.csv"));
+        // string mechanism) => FixPath(Path.Combine(rawPath, $"session-{sessNo}", $"aanexec-sess{sessNo:D2}-trial{trialNo:D3}-{game}-{mechanism}.csv"));
+
+    // Fix stupid Window's path separator issue.
+    public static string FixPath(string path) => path.Replace("\\", "/");
+
+    public static void setUserId(string userID){
+        basePath = FixPath(Path.Combine(Application.dataPath,"data", AppData.Instance.userID,"data"));
+        configFile = basePath + "/configdata.csv";
+    }
 
     public static void CreateFileStructure()
     {
-        directoryPathConfig = basePath + "/configuration";
-        sessionPath = basePath + "/sessions";
-        gamePath = basePath + "/gameparams";
-        mechPath = basePath + "/mechparams";
-        aanAdaptPath = basePath + "/aanadapt";
-        aanExecPath = basePath + "/aanexec";
-        rawPath = basePath + "/rawdata";
-        romPath = basePath + "/rom";
-        logPath = basePath + "/applog";
-        sessionFile = sessionPath + "/sessions.csv";
+        directoryPathConfig = FixPath(basePath + "/configuration");
+        sessionPath = FixPath(Path.Combine(basePath, "sessions"));
+        gamePath = FixPath(Path.Combine(basePath, "gameparams"));
+        mechPath = FixPath(Path.Combine(basePath, "mechparams"));
+        aanAdaptPath = FixPath(Path.Combine(basePath, "aanadapt"));
+        aanExecPath = FixPath(Path.Combine(basePath, "aanexec"));
+        rawPath = FixPath(Path.Combine(basePath, "rawdata"));
+        romPath = FixPath(Path.Combine(basePath, "rom"));
+        logPath = FixPath(Path.Combine(basePath, "applog"));
+        controlGainPath = FixPath(Path.Combine(basePath, "controlgain"));
+        sessionFile = FixPath(Path.Combine(sessionPath, "sessions.csv"));
         // Check if the directory exists
         Directory.CreateDirectory(sessionPath);
         Directory.CreateDirectory(gamePath);
@@ -80,7 +118,25 @@ public static class DataManager
         Directory.CreateDirectory(rawPath);
         Directory.CreateDirectory(romPath);
         Directory.CreateDirectory(logPath);
+        Directory.CreateDirectory(controlGainPath);
     }
+    public static void ResetPaths()
+    {
+        basePath = null;
+        configFile = null;
+        sessionFile = null;
+
+        sessionPath = null;
+        gamePath = null;
+        mechPath = null;
+        aanAdaptPath = null;
+        aanExecPath = null;
+        rawPath = null;
+        romPath = null;
+        logPath = null;
+        controlGainPath = null;
+    }
+
 
     public static DataTable loadCSV(string filePath)
     {
@@ -125,6 +181,7 @@ public static class DataManager
     // Create session file
     public static void CreateSessionFile(string device, string location, string[] header = null)
     {
+       
         // Ensure the Sessions.csv file has headers if it doesn't exist
         if (!File.Exists(DataManager.sessionFile))
         {
@@ -169,28 +226,26 @@ public static class AppLogger
         }
     }
 
-    public static void StartLogging(string scene)
+    public static string StartLogging(string scene)
     {
         // Start Log file only if we are not already logging.
         if (isLogging)
         {
-            return;
+            return null;
         }
         if (!Directory.Exists(DataManager.logPath))
         {
             Directory.CreateDirectory(DataManager.logPath);
         }
-        logFilePath = Path.Combine(DataManager.logPath, $"log-{DateTime.Now:dd-MM-yyyy-HH-mm-ss}.log");
-        if (!File.Exists(logFilePath))
-        {
-            using (File.Create(logFilePath))
-            {
-                Debug.Log("created");
-            }
-        }
-        logWriter = new StreamWriter(logFilePath, true);
+        string _dtstr = DateTime.Now.ToString("dd-MM-yyyy-HH-mm-ss");
+        logFilePath = Path.Combine(DataManager.logPath, $"{_dtstr}-application.log");
+        // if (!File.Exists(logFilePath)) File.Create(logFilePath);
+
+        // Create the log file and write the header.
+        logWriter = new StreamWriter(logFilePath, true, Encoding.UTF8);
         currentScene = scene;
         LogInfo("Created PLUTO log file.");
+        return _dtstr;
     }
 
     public static void SetCurrentScene(string scene)
@@ -240,7 +295,7 @@ public static class AppLogger
             if (logWriter != null)
             {
                 string _user = AppData.Instance.userData != null ? AppData.Instance.userData.hospNumber : "";
-                string _msg = $"{DateTime.Now:dd-MM-yyyy HH:mm:ss} {logMsgType,-7} {InBraces(_user), -10} {InBraces(currentScene), -12} {InBraces(currentMechanism), -8} {InBraces(currentGame), -8} {message}";
+                string _msg = $"{DateTime.Now:dd-MM-yyyy HH:mm:ss} {logMsgType,-7} {InBraces(_user), -10} {InBraces(currentScene), -12} {InBraces(currentMechanism), -8} {InBraces(currentGame), -8} >> {message}";
                 logWriter.WriteLine(_msg);
                 logWriter.Flush();
                 if (DEBUG) Debug.Log(_msg);
@@ -263,6 +318,3 @@ public static class AppLogger
         LogMessage(message, LogMessageType.ERROR);
     }
 }
-
-
-
