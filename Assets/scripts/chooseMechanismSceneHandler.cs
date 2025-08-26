@@ -1,12 +1,9 @@
-using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using System;
 using UnityEngine.SceneManagement;
-using System.Collections.Generic;
 using System.Collections;
-using System.Collections.Concurrent;
+using System.Data;
 
 public class MechanismSceneHandler : MonoBehaviour
 {
@@ -28,13 +25,15 @@ public class MechanismSceneHandler : MonoBehaviour
     private static bool changeScene = false;
     private string mechSelected = null;
     private string nextScene = "CALIB";
-    private string exitScene = "SUMM";
 
     void Start()
     {
         // Reset mechanisms.
         PlutoComm.sendHeartbeat();
+        AppData.Instance.userData =  new PlutoUserData(DataManager.configFile, DataManager.sessionFile);
+
         PlutoComm.calibrate("NOMECH");
+        PlutoComm.setControlGain(1.0f);
         AppData.Instance.SetMechanism(null);
 
         // Initialize if needed
@@ -87,10 +86,22 @@ public class MechanismSceneHandler : MonoBehaviour
         {
             Toggle toggleComponent = child.GetComponent<Toggle>();
             bool isPrescribed = AppData.Instance.userData.mechMoveTimePrsc[toggleComponent.name] > 0;
+            
 
+            bool isDone = AppData.Instance.userData.getTodayMoveTimeForMechanism(toggleComponent.name)>= AppData.Instance.userData.mechMoveTimePrsc[toggleComponent.name];
+            // Debug.Log($" done : {isDone}, x-{AppData.Instance.userData.getTodayMoveTimeForMechanism(toggleComponent.name)} y-{AppData.Instance.userData.mechMoveTimePrsc[toggleComponent.name]} ");
             // Hide the component if it has no prescribed time.
-            toggleComponent.interactable = isPrescribed;
-            toggleComponent.gameObject.SetActive(isPrescribed);
+            
+            toggleComponent.interactable = (isPrescribed);
+            toggleComponent.gameObject.SetActive(isPrescribed );
+
+            
+            // Change the toggle's background color
+            Image bgImage = toggleComponent.targetGraphic as Image; // Usually the Background Image
+            if (bgImage != null)
+            {
+              if (isDone) bgImage.color = Color.yellow; // completed  
+            }
 
             // Update the time trained in the timeLeft component of toggleCompoent.
             Transform timeLeftTransform = toggleComponent.transform.Find("timeLeft");
@@ -130,6 +141,7 @@ public class MechanismSceneHandler : MonoBehaviour
             {
                 // Update toggleSelected whenever a toggle's value changes
                 toggleComponent.onValueChanged.AddListener(delegate { CheckToggleStates(); });
+
             }
         }
     }
@@ -142,12 +154,15 @@ public class MechanismSceneHandler : MonoBehaviour
             if (toggleComponent != null && toggleComponent.isOn)
             {
                 mechSelected = child.name;
+                //AppData.Instance.userData.mechMoveTimePrsc[mechSelected];
                 AppData.Instance.SetMechanism(mechSelected);
+                StartCoroutine(MoveToNextScene());
                 return;
             }
         }
         mechSelected = null;
         AppData.Instance.SetMechanism(mechSelected);
+    
     }
 
     private void OnPlutoButtonReleased()
@@ -161,13 +176,21 @@ public class MechanismSceneHandler : MonoBehaviour
 
     void LoadNextScene()
     {
-        // Create a new AAN controller.
-        AppData.Instance.aanController = new PlutoAANController(AppData.Instance.selectedMechanism);
+        AppData.Instance.speedData = new MechanismSpeed();
+        AppData.Instance.speedData .EvaluateAndUpdateGameSpeed();
+      
         AppLogger.LogInfo($"New AAN controller created for '{AppData.Instance.selectedMechanism.name}'.");
-
+        //PlutoComm.setControlGain(1.0f);
         // Set the mechanism.
         AppLogger.LogInfo($"Switching scene to '{nextScene}'.");
         SceneManager.LoadScene(nextScene);
+    }
+
+    IEnumerator MoveToNextScene()
+    {
+        yield return new WaitForSeconds(0.15f); 
+        LoadNextScene();
+        mechSelected = null;
     }
 
     IEnumerator LoadSummaryScene()
@@ -181,7 +204,24 @@ public class MechanismSceneHandler : MonoBehaviour
 
     private void OnExitButtonClicked()
     {
-        StartCoroutine(LoadSummaryScene());
+        // Set the mechanism.
+        if (AppData.Instance.userData.dTableSession != null && AppData.Instance.userData.dTableSession.Rows.Count >= 1)
+        {
+            Debug.Log(AppData.Instance.userData.dTableSession.Rows.Count);
+            StartCoroutine(LoadSummaryScene());
+        }
+        else
+        {
+            Debug.Log(AppData.Instance.userData.dTableSession.Rows.Count);
+            PlutoComm.stopSensorStream();
+            ConnectToRobot.disconnect();
+            Application.Quit();
+
+        #if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+        #endif
+        }
+        
     }
 
     private void OnNextButtonClicked()
@@ -193,6 +233,10 @@ public class MechanismSceneHandler : MonoBehaviour
         }
     }
 
+    public void moveNextScene()
+    {
+      //  LoadNextScene();   
+    }
     private void OnDestroy()
     {
         if (ConnectToRobot.isPLUTO)

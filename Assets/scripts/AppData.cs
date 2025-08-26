@@ -1,20 +1,10 @@
 
 using System;
-using System.IO;
-using System.Collections;
 using System.Collections.Generic;
-using System.Data;
-using UnityEditor.PackageManager;
-
-using System.Globalization;
-using System.Data;
-using System.Linq;
-using Unity.VisualScripting;
-using PlutoNeuroRehabLibrary;
-using System.Text;
 using System.Diagnostics;
+using System.Text;
+using Unity.VisualScripting;
 using UnityEngine;
-using System.Diagnostics.Contracts;
 
 /*
  * HOMER PLUTO Application Data Class.
@@ -29,103 +19,73 @@ public partial class AppData
      * CONSTANT FIXED VARIABLES.
      */
     // COM Port for the device
-    public const string COMPort = "COM5";
+    // public const string COMPort = "COM13"; //pluto cmc 1 com 24 /JS device
 
-    // Keeping track of time.
-    private double nanosecPerTick = 1.0f / Stopwatch.Frequency;
-    private Stopwatch stp_watch = new Stopwatch();
-    public double CurrentTime => stp_watch.ElapsedTicks * nanosecPerTick;
-
-    // Change true to run game from choosegamescene
-    public bool runIndividualGame = false;
-
-    /*
-     * APP CONTROL FLOW VARIABLES.
-     */
-    private bool loggedIn = false;
-    // Old and new PROM used by assessment scene
-    //public static ROM oldROM;
-    //public static ROM newROM;
-    //public static ROM oldAROM;
-    //public static ROM newAROM;
-
-    //public static float[] aRomValue = new float[2];
-    //public static float[] pRomValue = new float[2];
-    //temp storage for PROM min and max
-
-    //public static float promMin = 0f;
-    //public static float promMax = 0f;
+    public string COMPort { get; private set; }
 
     // What is this used for?
     public string _dataLogDir = null;
-    
+
+    // Property with default fallback
+    // public string userID = null;
+
+    public string userID { get; private set; } = null;
+
     /*
      * USED AND THERAPY RELATED DATA.
      */
     public PlutoUserData userData;
-    public HatTrickGame hatTrickGame;
+    public MechanismSpeed speedData;
     public PlutoMechanism selectedMechanism { get; private set; }
-    public string selectedGame = null;
-    
+    public string selectedGame { get; private set; } = null;
+
     /*
      * SESSION DETAILS
      */
-    public string trialDataFileLocation1;
-    //private bool _sessionStarted;
-    //private DateTime _sessionDateTime;
-    //private GameSession _currentSession;
-    //private readonly string _sessionFilePath;
-    //private bool _loginCalled; // Track if login has been called once
-    //private readonly string csvFilePath;
     public int currentSessionNumber { get; set; }
     public DateTime startTime { get; private set; }
     public DateTime? stopTime { get; private set; }
-    public string trialDataFileLocation { get; set; }
-    public string deviceSetupLocation { get; set; }
-    public string assistMode { get; set; }
-    public string assistModeParameters { get; set; }
-    public string gameParameter { get; set; }
-    public string mechanism { get; set; }
-    public string moveTime { get; set; }
-    public float gameSpeed { get; set; }
-    public float successRate { get; set; }
-    public float desiredSuccessRate { get; set; }
-    public int trialNumberDay { get; set; }
-    public int trialNumberSession { get; set; }
-    public string trialType { get; set; }
     public DateTime trialStartTime { get; set; }
     public DateTime? trialStopTime { get; set; }
 
     public void SetStopTime() => stopTime = DateTime.Now;
 
     /*
+     * Logging file names.
+     */
+    public string trialRawDataFile { get; private set; } = null;
+    private StringBuilder rawDataString = null;
+    private readonly object rawDataLock = new object();
+    private StringBuilder aanExecDataString = null;
+
+    /*
+     * Game trial data
+     */
+    public List<float> previousSuccessRates = null;
+    public float desiredSuccessRate { get; private set; }
+    public float successRate { get; private set; } = 0f;
+    public HomerTherapy.TrialType trialType;
+
+
+    /*
      * AAN Data
      */
     public PlutoAANController aanController = null;
-
-    //public static string aanDataFileLocation = null;
-    //// Options to drive 
-    //public static string trainingSide
-    //{
-    //    get => AppData.userData?.rightHand == true ? "RIGHT" : "LEFT";
-    //}
-
-    //// Selected Mechanism
-    //public static PlutoMechanism selectedMechanism = null;
-    ////public static string selectedMechanism;
-    //public static string selectedGame = null;
-
-    // Handling the data
-    //public static int currentSessionNumber;
-    //public static string trialDataFileLocation;
-    //public static string trialDataFileLocation1;
+    private float _currControlBound;
+    public float CurrentControlBound => _currControlBound;
 
     private AppData()
     {
     }
 
+    public void setComport(string comport)
+    {
+        COMPort = comport;
+    }
     public void Initialize(string scene, bool doNotResetMech = true)
     {
+        UnityEngine.Debug.Log(Application.persistentDataPath);
+
         // Set sesstion start time.
         startTime = DateTime.Now;
 
@@ -133,30 +93,54 @@ public partial class AppData
         DataManager.CreateFileStructure();
 
         // Start logging.
-        AppLogger.StartLogging(scene);
+        string _dtstr = AppLogger.StartLogging(scene);
 
         // Connect and init robot.
-        InitializeRobotConnection(doNotResetMech);
+        InitializeRobotConnection(doNotResetMech, _dtstr);
+
+        // Intialize the PLUTO AAN logger.
+        PlutoAanLogger.StartLogging(_dtstr);
 
         // Initialize the session manager.
         //SessionManager.Initialize(DataManager.sessionPath);
         //SessionManager.Instance.Login();
 
         // Initialize the user data.
+        UnityEngine.Debug.Log(DataManager.configFile);
+        UnityEngine.Debug.Log(DataManager.sessionFile);
+
         userData = new PlutoUserData(DataManager.configFile, DataManager.sessionFile);
         // Selected mechanism and game.
         selectedMechanism = null;
         selectedGame = null;
 
         // Get current session number.
-        currentSessionNumber = userData.dTableSession.Rows.Count > 0 ? 
+        currentSessionNumber = userData.dTableSession.Rows.Count > 0 ?
             Convert.ToInt32(userData.dTableSession.Rows[userData.dTableSession.Rows.Count - 1]["SessionNumber"]) + 1 : 1;
         AppLogger.LogWarning($"Session number set to {currentSessionNumber}.");
+
+        //set to upload the data to the AWS
+        // awsManager.changeUploadStatus(awsManager.status[0]);
     }
 
-    private void InitializeRobotConnection(bool doNotResetMech)
+    private void InitializeRobotConnection(bool doNotResetMech, string datetimestr = null)
     {
-        ConnectToRobot.Connect(COMPort);
+        // Initialize the PLUTO Comm logger.
+        if (datetimestr != null)
+        {
+            PlutoComLogger.StartLogging(datetimestr);
+        }
+
+        if (!ConnectToRobot.isPLUTO)
+        {
+            ConnectToRobot.Connect(COMPort);
+        }
+        // Check if the connection is successful.
+        if (!ConnectToRobot.isConnected)
+        {
+            AppLogger.LogError($"Failed to connect to PLUTO @ {COMPort}.");
+            throw new Exception($"Failed to connect to PLUTO @ {COMPort}.");
+        }
         AppLogger.LogInfo($"Connected to PLUTO @ {COMPort}.");
         // Set control to NONE, calibrate and get version.
         PlutoComm.sendHeartbeat();
@@ -170,7 +154,8 @@ public partial class AppData
         PlutoComm.getVersion();
         // Start sensorstream.
         PlutoComm.sendHeartbeat();
-        PlutoComm.startSensorStream();
+        PlutoComm.setDiagnosticMode();
+        // PlutoComm.startSensorStream();
         AppLogger.LogInfo($"PLUTO SensorStream started.");
     }
 
@@ -180,23 +165,63 @@ public partial class AppData
         {
             selectedMechanism = null;
             aanController = null;
-            trialNumberDay = -1;
-            trialNumberSession = -1;
             AppLogger.LogInfo($"Selected mechanism set to null.");
             return;
         }
         // Set the mechanism name.
-        selectedMechanism = new PlutoMechanism(name: name, side: trainingSide);
-        // Set the day and session trial numbers.
-        trialNumberDay = selectedMechanism.trialNumberDay;
-        trialNumberSession = selectedMechanism.trialNumberSession;
+        selectedMechanism = new PlutoMechanism(name: name, side: trainingSide, sessno: currentSessionNumber);
         AppLogger.LogInfo($"Selected mechanism '{selectedMechanism.name}'.");
         AppLogger.SetCurrentMechanism(selectedMechanism.name);
-        AppLogger.LogInfo($"Trial numbers for '{selectedMechanism.name}' updated. Day: {trialNumberDay}, Session: {trialNumberSession}.");
+        AppLogger.LogInfo($"Trial numbers for ' {selectedMechanism.name}' updated. Day: {selectedMechanism.trialNumberDay}, Session: {selectedMechanism.trialNumberSession}.");
+    }
+
+    public void setUser(string user)
+    {
+        userID = user;
+        UnityEngine.Debug.Log($" id : {userID}");
+    }
+
+    public void SetGame(string gameName)
+    {
+        selectedGame = gameName;
+        previousSuccessRates = AppData.Instance.userData.GetLastTwoSuccessRates(selectedMechanism.name, selectedGame);
+
+        // Set selected game.
+        AppLogger.LogInfo($"Selected game '{selectedGame}'.");
+        AppLogger.SetCurrentGame(selectedGame);
     }
 
     public string trainingSide => userData?.rightHand == true ? "RIGHT" : "LEFT";
-    
+
     // Check training size.
     public bool IsTrainingSide(string side) => string.Equals(trainingSide, side, StringComparison.OrdinalIgnoreCase);
+    public void Reset()
+    {
+        userID = null;
+        userData = null;
+        speedData = null;
+        selectedMechanism = null;
+        selectedGame = null;
+
+        currentSessionNumber = 0;
+        startTime = default;
+        stopTime = null;
+        trialStartTime = default;
+        trialStopTime = null;
+
+        trialRawDataFile = null;
+        rawDataString = null;
+        aanExecDataString = null;
+
+        previousSuccessRates = null;
+        desiredSuccessRate = 0f;
+        successRate = 0f;
+        aanController = null;
+        DataManager.ResetPaths();
+    }
+
+    public void setRawDataStringtoNull()
+    {
+        rawDataString = null;
+    }
 }

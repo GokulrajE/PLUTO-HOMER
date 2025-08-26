@@ -7,21 +7,15 @@
 
 using System;
 using System.IO;
-using System.Collections;
 using System.Collections.Generic;
 using System.Data;
-using UnityEditor.PackageManager;
 
 using System.Globalization;
-using System.Data;
 using System.Linq;
-using Unity.VisualScripting;
-using PlutoNeuroRehabLibrary;
 using System.Text;
 // using XCharts.Runtime;
-using System.Diagnostics;
 using UnityEngine;
-using System.Diagnostics.Contracts;
+using System.Collections;
 
 public static class PlutoDefs
 {
@@ -33,15 +27,329 @@ public static class PlutoDefs
     }
 }
 
-public static class HomerTherapyConstants
+public static class HomerTherapy
 {
     public static readonly float SuccessRateThForSpeedIncrement = 0.9f;
-    static public readonly Dictionary<string, float> GameSpeedIncrements = new Dictionary<string, float>  {
+    public static readonly float TrialDuration = 60.0f;
+    public static readonly Dictionary<string, float> GameSpeedIncrements = new Dictionary<string, float>  {
         { "PING-PONG", 0.5f },
         { "TUK-TUK", 0.2f },
         { "HAT-Trick", 1f }
     };
+    
+    private static float? lastTarget = null;
+    private static float threshold = 0f;
+
+    public enum TrialType
+    {
+        SR85PCCATCH,
+        TRAIN,
+        SR85PCTRAIN
+    }
+
+    private static float[] SuccessRateForTrials = new float[] {
+        85, 85, 85, 85, 85,
+        90, 90, 90, 87, 84,
+        79, 79, 79, 79, 79,
+        81, 83, 85, 90, 90
+    };
+    private static TrialType[] TrialTypeForTrials = new TrialType[] {
+        TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, TrialType.SR85PCCATCH,
+        TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+        TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+        TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+    };
+    // private static float[] SuccessRateForTrials = new float[] {
+    //     85, 90, 90, 87, 84,
+    //     79, 79, 79, 79, 79,
+    //     79, 79, 81, 83, 85,
+    //     85, 85, 85, 85, 85
+    // };
+    // private static TrialType[] TrialTypeForTrials = new TrialType[] {
+    //     TrialType.SR85PCTRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+    //     TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+    //     TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN, TrialType.TRAIN,
+    //     TrialType.SR85PCCATCH, TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, TrialType.SR85PCTRAIN, 
+    // };
+
+    // Function to return the success rate and trial type.
+    public static (float sRate, TrialType tType) GetTrailTypeAndSuccessRate(int trialNo)
+    {
+        float sRate;
+        TrialType tType;
+
+        trialNo = (trialNo - 1) % 20;
+        sRate = SuccessRateForTrials[trialNo];
+        tType = TrialTypeForTrials[trialNo];
+        // Updat success rate.
+        sRate += tType == TrialType.TRAIN ? UnityEngine.Random.Range(-4, 5) : 0;
+        return (sRate, tType);
+    }
+
+    // Generate new target position
+    private static float[] GetRomBoundariesForTargets(float[] arom, float[] prom)
+    {
+        if (prom[0] == 0 && arom[0] == 0)
+        {
+            return new float[] {
+                arom[0],
+                arom[1] / 2,
+                arom[1],
+                (prom[1] - arom[1]) / 2,
+                prom[1]
+            };
+        }
+        return new float[] {
+            prom[0],
+            (arom[0] + prom[0]) / 2,
+            arom[0],
+            arom[0] + (arom[1] + arom[0]) / 4,
+            (arom[1] + arom[0]) / 2,
+            arom[0] + 3 * (arom[1] + arom[0]) / 4,
+            arom[1],
+            (prom[1] - arom[1]) / 2,
+            prom[1]
+        };
+    }
+
+
+    public static float GetNewTargetPositionUniformFull(float[] arom, float[] prom)
+    {
+        float target;
+        threshold = (AppData.Instance.selectedMechanism.currRom.promMax - AppData.Instance.selectedMechanism.currRom.promMin) * 0.2f;
+        int attempts = 0;
+
+        do
+        {
+            target = UnityEngine.Random.Range(prom[0], prom[1]);
+            attempts++;
+
+            if (attempts > 20) break;
+
+        } while (lastTarget != null && Mathf.Abs((float)lastTarget - target) < threshold);
+
+        lastTarget = target;
+        return target;
+    }
+  
 }
+
+
+public class MechanismSpeed
+{
+    public float gameSpeed { get; private set; } = -1f;
+
+    private string mechanismToCheck;
+
+    private DataTable sessionTable;
+    private string mechParamsCsvPath;
+    private static readonly string[] speedChMode = new string[] { "manual", "automatic" };
+    public static readonly Dictionary<string, float> DefaultMechanismSpeeds = new Dictionary<string, float>
+    {
+        { "WFE", 10.0f },
+        { "WURD", 10.0f },
+        { "FPS", 10.0f },
+        { "HOC", 10.0f },
+        { "FME1", 10.0f },
+        { "FME2", 10.0f },
+    };
+    public MechanismSpeed()
+    {
+        this.mechanismToCheck = AppData.Instance.selectedMechanism.name;
+        this.sessionTable = AppData.Instance.userData.dTableSession;
+        this.mechParamsCsvPath = DataManager.GetMechFileName(AppData.Instance.selectedMechanism.name);
+    }
+
+    public void setGameSpeed(float gs)
+    {
+        gameSpeed = gs;
+}
+    public void EvaluateAndUpdateGameSpeed()
+    {
+        if (!File.Exists(mechParamsCsvPath))
+        {
+            WriteInitialSpeed();
+            return;
+        }
+        var mechData = sessionTable.AsEnumerable()
+            .Where(row => row.Field<string>("Mechanism") == mechanismToCheck)
+            .ToList();
+
+        var groupedByDate = mechData
+            .GroupBy(row => DateTime.ParseExact(row.Field<string>("DateTime"), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture).Date)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        if (groupedByDate.Count < 3)
+        {
+            GetLastDateFromMechParams();
+            Debug.Log("Not enough different dates for evaluation.");
+            return;
+        }
+
+        var firstDay = groupedByDate[0];
+        var thirdDay = groupedByDate[2];
+
+        float avgTrainSR1 = GetAvgSuccessRate(firstDay, "SR85PCTRAIN");
+        float avgTrainSR3 = GetAvgSuccessRate(thirdDay, "SR85PCTRAIN");
+
+        float catchSR1 = GetSuccessRate(firstDay, "SR85PCCATCH");
+        float catchSR3 = GetSuccessRate(thirdDay, "SR85PCCATCH");
+
+        float avgCB1 = GetAvgControlBound(firstDay, "SR85PCTRAIN");
+        float avgCB3 = GetAvgControlBound(thirdDay, "SR85PCTRAIN");
+
+        Debug.Log($"Train SR Day1: {avgTrainSR1}, Train SR Day3: {avgTrainSR3}");
+        Debug.Log($"Catch SR Day1: {catchSR1}, Catch SR Day3: {catchSR3}");
+        Debug.Log($"CB Day1: {avgCB1}, CB Day3: {avgCB3}");
+
+        if (avgTrainSR3 > avgTrainSR1 && catchSR3 > catchSR1 && avgCB3 < avgCB1)
+        {
+            DateTime? lastUpdate = GetLastDateFromMechParams();
+            if (lastUpdate == null)
+            {
+                Debug.Log("Mechanism params file not found. Creating new file with default speed.");
+                WriteInitialSpeed();
+                return;
+            }
+
+            var sessionDatesBetween = groupedByDate
+                .Where(g => g.Key > lastUpdate.Value.Date && g.Key < DateTime.Today)
+                .Select(g => g.Key)
+                .Distinct()
+                .ToList();
+
+            Debug.Log($"Dates between last update and today: {sessionDatesBetween.Count}");
+
+            if ((DateTime.Today - lastUpdate.Value).Days >= 3 && sessionDatesBetween.Count >= 2)
+            {
+                UpdateGameSpeed();
+            }
+            else
+            {
+                Debug.Log("Not enough session activity since last update to warrant game speed change.");
+            }
+        }
+        else
+        {
+            Debug.Log("Conditions for game speed update not met.");
+        }
+    }
+
+    private float GetAvgSuccessRate(IEnumerable<DataRow> rows, string trialType)
+    {
+        var selected = rows.Where(r => r.Field<string>("TrialType") == trialType)
+                            .Take(4)
+                            .Select(r => float.TryParse(r.Field<string>("SuccessRate"), out var sr) ? sr : -1f)
+                            .Where(sr => sr >= 0)
+                            .ToList();
+
+        return selected.Count > 0 ? selected.Average() : 0;
+    }
+
+    private float GetSuccessRate(IEnumerable<DataRow> rows, string trialType)
+    {
+        return rows.Where(r => r.Field<string>("TrialType") == trialType)
+                   .Select(r => float.TryParse(r.Field<string>("SuccessRate"), out var sr) ? sr : -1f)
+                   .FirstOrDefault(sr => sr >= 0);
+    }
+
+    private float GetAvgControlBound(IEnumerable<DataRow> rows, string trialType)
+    {
+        var selected = rows.Where(r => r.Field<string>("TrialType") == trialType)
+                            .Take(4)
+                            .Select(r => float.TryParse(r.Field<string>("CurrentControlBound"), out var cb) ? cb : -1f)
+                            .Where(cb => cb >= 0)
+                            .ToList();
+
+        return selected.Count > 0 ? selected.Average() : 0;
+    }
+
+    private DateTime? GetLastDateFromMechParams()
+    {
+        if (!File.Exists(mechParamsCsvPath))
+            return null;
+
+        DataTable mechData = DataManager.loadCSV(mechParamsCsvPath);
+
+        if (mechData.Rows.Count == 0)
+            return null;
+
+        DataRow lastRow = mechData.Rows[mechData.Rows.Count - 1];
+
+        DateTime? lastDate = null;
+        float parsedSpeed;
+
+        try
+        {
+            string dateStr = lastRow["DateTime"].ToString();
+            string speedStr = lastRow["Speed"].ToString();
+
+            if (DateTime.TryParseExact(dateStr, DataManager.DATEFORMAT, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
+                lastDate = dt;
+
+            if (float.TryParse(speedStr, out parsedSpeed))
+            {
+                //currSpeed = parsedSpeed;
+                gameSpeed = parsedSpeed;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("Error parsing mechParams: " + ex.Message);
+        }
+
+        return lastDate;
+    }
+
+    private void WriteInitialSpeed()
+    {
+        gameSpeed = DefaultMechanismSpeeds[mechanismToCheck];
+        using (var writer = new StreamWriter(mechParamsCsvPath, false))
+        {
+            writer.WriteLine("DateTime,Mode,Speed");
+            writer.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")},Default,{gameSpeed}");
+        }
+    }
+
+    private void UpdateGameSpeed(int mode = 1)
+    {
+        if (gameSpeed <= 0)
+        {
+            gameSpeed = DefaultMechanismSpeeds[mechanismToCheck];
+        }
+
+        string chMode = speedChMode[mode];
+        gameSpeed = gameSpeed * 1.1f;
+
+        using (var writer = new StreamWriter(mechParamsCsvPath, true))
+        {
+            writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss},{chMode},{gameSpeed}");
+        }
+
+        Debug.Log($"Game speed updated to: {gameSpeed}");
+    }
+
+    public void updateGameSpeedfromGame(float gs, int mode = 0)
+    {
+        if (gs <= 0)
+        {
+            gs= DefaultMechanismSpeeds[mechanismToCheck];
+        }
+
+        string chMode = speedChMode[mode];
+
+        using (var writer = new StreamWriter(mechParamsCsvPath, true))
+        {
+            writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss},{chMode},{gs}");
+        }
+
+        Debug.Log($"Game speed updated to: {gs}");
+
+    }
+}
+
+
 
 // PLUTO UserData Class
 public class PlutoUserData
@@ -58,17 +366,7 @@ public class PlutoUserData
     // Total movement times.
     public float totalMoveTimePrsc
     {
-        get
-        {
-            if (mechMoveTimePrsc == null)
-            {
-                return -1f;
-            }
-            else
-            {
-                return mechMoveTimePrsc.Values.Sum();
-            }
-        }
+        get => mechMoveTimePrsc == null ? -1f : mechMoveTimePrsc.Values.Sum();
     }
 
     public float totalMoveTimePrev
@@ -159,16 +457,7 @@ public class PlutoUserData
         this.rightHand = dTableConfig.Rows[0]["TrainingSide"].ToString().ToUpper() == "RIGHT";
     }
 
-    
-    // // Get the last session number.
-    // public static int GetPreviousSessionNumber()
-    // {
-    //     if (!File.Exists(sessionFile)) return 0;
-    //     // Read the last line of the file
-    //     var lastLine = File.ReadLines(sessionFile).LastOrDefault();
-    //     if (lastLine == null || lastLine.StartsWith("SessionNumber")) return 0;
-    //     return int.TryParse(lastLine.Split(',')[0], out var sessionNumber) ? sessionNumber : 0;
-    // }
+ 
 
     public string GetDeviceLocation() => dTableConfig.Rows[dTableConfig.Rows.Count - 1].Field<string>("Location");
 
@@ -213,9 +502,9 @@ public class PlutoUserData
         {
             // Get the total movement time for each mechanism
             var _totalMoveTime = dTableSession.AsEnumerable()
-                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
+                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
                 .Where(row => row.Field<string>("Mechanism") == PlutoDefs.Mechanisms[i])
-                .Sum(row => Convert.ToInt32(row["MoveTime"]));
+                .Sum(row => 60);
             mechMoveTimePrev[PlutoDefs.Mechanisms[i]] = _totalMoveTime / 60f;
         }
     }
@@ -230,7 +519,7 @@ public class PlutoUserData
         // Get the recent data of use for the selected mechanism.
         var lastUsageDate = dTableSession.AsEnumerable()
             .Where(row => row.Field<string>("Mechanism") == AppData.Instance.selectedMechanism.name)
-            .Select(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date)
+            .Select(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date)
             .Where(date => date < DateTime.Now.Date) // Exclude today
             .OrderByDescending(date => date)
             .FirstOrDefault();
@@ -242,18 +531,18 @@ public class PlutoUserData
         AppLogger.LogInfo($"Last usage date for mechanism {AppData.Instance.selectedMechanism}: {lastUsageDate:dd-MM-yyyy}");
 
         Dictionary<string, float> updatedGameSpeeds = new Dictionary<string, float>();
-        foreach (var _gameName in HomerTherapyConstants.GameSpeedIncrements.Keys)
+        foreach (var _gameName in HomerTherapy.GameSpeedIncrements.Keys)
         {
             var rows = dTableSession.AsEnumerable()
-                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date == lastUsageDate)
+                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == lastUsageDate)
                 .Where(row => row.Field<string>("GameName") == _gameName && row.Field<string>("Mechanism") == AppData.Instance.selectedMechanism.name);
 
             float previousGameSpeed = rows.Any() ? rows.Average(row => Convert.ToSingle(row["GameSpeed"])) : 0f;
             float avgSuccessRate = rows.Any() ? rows.Average(row => Convert.ToSingle(row["SuccessRate"])) : 0f;
 
-            if (avgSuccessRate >= HomerTherapyConstants.SuccessRateThForSpeedIncrement)
+            if (avgSuccessRate >= HomerTherapy.SuccessRateThForSpeedIncrement)
             {
-                updatedGameSpeeds[_gameName] = previousGameSpeed + HomerTherapyConstants.GameSpeedIncrements[_gameName];
+                updatedGameSpeeds[_gameName] = previousGameSpeed + HomerTherapy.GameSpeedIncrements[_gameName];
             }
             else
             {
@@ -266,15 +555,15 @@ public class PlutoUserData
             AppLogger.LogInfo($"Game speed for '{game.Key}' is set to {game.Value}.");
             if (game.Key == "PING-PONG")
             {
-                gameData.gameSpeedPP = game.Value;
+               // gameData.gameSpeedPP = game.Value;
             }
             else if (game.Key == "TUK-TUK")
             {
-                gameData.gameSpeedTT = game.Value;
+               // gameData.gameSpeedTT = game.Value;
             }
             else if (game.Key == "HAT-Trick")
             {
-                gameData.gameSpeedHT = game.Value;
+               // gameData.gameSpeedHT = game.Value;
             }
         }
     }
@@ -297,7 +586,7 @@ public class PlutoUserData
     public float getPrevTodayMoveTime()
     {
         var _totalMoveTimeToday = dTableSession.AsEnumerable()
-            .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
+            .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
             .Sum(row => Convert.ToInt32(row["MoveTime"]));
         UnityEngine.Debug.Log(_totalMoveTimeToday);
         return _totalMoveTimeToday / 60f;
@@ -321,8 +610,8 @@ public class PlutoUserData
 
             // Calculate the total move time for the given day. If no data is found, _moveTime will be zero.
             int _moveTime = dTableSession.AsEnumerable()
-                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date == _day)
-                .Sum(row => Convert.ToInt32(row["MoveTime"]));
+                .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == _day)
+                .Sum(row => 60);
 
             daySummaries[i - 1] = new DaySummary
             {
@@ -334,15 +623,176 @@ public class PlutoUserData
         }
         return daySummaries;
     }
+
+    public List<float> GetLastTwoSuccessRates(string mechanism, string gameName)
+    {
+        List<float> lastTwoSuccessRates = new List<float>();
+
+        dTableSession = DataManager.loadCSV(DataManager.sessionFile);
+
+        if (dTableSession == null || dTableSession.Rows.Count == 0)
+        {
+            return new List<float> { 0f, 0f };
+        }
+
+        var today = DateTime.Today;
+
+        var filteredRows = dTableSession.AsEnumerable()
+            .Where(row =>
+                row.Field<string>("Mechanism") == mechanism &&
+                row.Field<string>("GameName") == gameName)
+            .OrderByDescending(row => DateTime.ParseExact(row.Field<string>("TrialStartTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture))
+            .ToList();
+        // var successRows = dTableSession.AsEnumerable()
+        // .Where(row =>
+        //     row.Field<string>("Mechanism") == mechanism &&
+        //     row.Field<string>("GameName") == gameName &&
+        //     !string.IsNullOrWhiteSpace(row.Field<string>("SuccessRate")))
+        // .ToList();
+
+        //     if (successRows.Any())
+        //     {
+        //         Others.highestSuccessRate = successRows
+        //             .Max(row => float.Parse(row.Field<string>("SuccessRate"), CultureInfo.InvariantCulture));
+        //             Debug.Log(Others.highestSuccessRate);
+        //     }
+        //     else
+        //     {
+        //         Others.highestSuccessRate = 0f; // or float.NaN, or handle as needed
+        //     }
+
+        var successRows = dTableSession.AsEnumerable()
+        .Where(row =>
+            row.Field<string>("Mechanism") == mechanism &&
+            row.Field<string>("GameName") == gameName &&
+            !string.IsNullOrWhiteSpace(row.Field<string>("SuccessRate")) &&
+            !string.IsNullOrWhiteSpace(row.Field<string>("CurrentControlBound")))
+        .ToList();
+
+        if (successRows.Any())
+        {
+            Others.highestSuccessRate = successRows
+                .Max(row =>
+                {
+                    float successRate = float.Parse(row.Field<string>("SuccessRate"), CultureInfo.InvariantCulture);
+                    float controlBound = float.Parse(row.Field<string>("CurrentControlBound"), CultureInfo.InvariantCulture);
+                    return successRate * (PlutoAANController.MAXCONTROLBOUND - controlBound);
+                });
+
+            Debug.Log(Others.highestSuccessRate);
+        }
+        else
+        {
+            Others.highestSuccessRate = 0f;
+        }
+
+
+        if (!filteredRows.Any())
+        {
+            return null;
+        }
+
+        // Get all success rates from today
+        var todayRates = filteredRows
+            .Where(row => DateTime.ParseExact(row.Field<string>("TrialStartTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == today)
+            .Select(row => Convert.ToSingle(row["SuccessRate"]))
+            .ToList();
+
+        if (todayRates.Count >= 2)
+        {
+            lastTwoSuccessRates.Add(todayRates[1]);
+            lastTwoSuccessRates.Add(todayRates[0]);
+        }
+        else if (todayRates.Count == 1)
+        {
+
+            var previousDayRate = filteredRows
+                .Where(row => DateTime.ParseExact(row.Field<string>("TrialStartTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date < today)
+                .Select(row => Convert.ToSingle(row["SuccessRate"]))
+                .FirstOrDefault();
+
+            lastTwoSuccessRates.Add(previousDayRate);
+            lastTwoSuccessRates.Add(todayRates[0]);
+
+        }
+        else
+        {
+            var previousDayRate = filteredRows
+                .Where(row => DateTime.ParseExact(row.Field<string>("TrialStartTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date < today)
+                .Select(row => Convert.ToSingle(row["SuccessRate"]))
+                .FirstOrDefault();
+
+            lastTwoSuccessRates.Add(previousDayRate);
+            lastTwoSuccessRates.Add(0f);
+        }
+
+        while (lastTwoSuccessRates.Count < 2)
+            lastTwoSuccessRates.Add(0f);
+
+        return lastTwoSuccessRates;
+    }
+
+
+
+}
+public static class MovementTracker
+{
+    private static Vector3 previousPlayerPosition;
+    private static Coroutine movementCoroutine;
+    private static float playerMovementTime = 0f;
+    private static MonoBehaviour coroutineRunner; // To run coroutines from a static class
+
+    public static float PlayerMovementTime => playerMovementTime; // Public getter
+
+    private static bool isInitialized = false;
+    private static bool isMoving = false;
+
+    public static void Initialize(MonoBehaviour runner, Vector3 startPosition)
+    {
+        if (!isInitialized)
+        {
+            coroutineRunner = runner;
+            playerMovementTime = 0f;
+            previousPlayerPosition = startPosition;
+            isInitialized = true;
+            movementCoroutine = coroutineRunner.StartCoroutine(TrackMovementTime()); // Start immediately
+        }
+    }
+
+    public static void UpdatePosition(Vector3 currentPosition)
+    {
+        if (!isInitialized)
+            return;
+
+        float playerDistanceMoved = Vector3.Distance(currentPosition, previousPlayerPosition);
+        isMoving = playerDistanceMoved > 0.001f;
+        previousPlayerPosition = currentPosition;
+    }
+
+    private static IEnumerator TrackMovementTime()
+    {
+        while (true)
+        {
+            if (isMoving)
+            {
+                playerMovementTime += Time.deltaTime;
+            }
+            yield return null;
+        }
+    }
+
 }
 
 public static class Others
 {
+    public static float gameTime = 0f;
+    public static float highestSuccessRate = 0f;
     public static string GetAbbreviatedDayName(DayOfWeek dayOfWeek)
     {
         return dayOfWeek.ToString().Substring(0, 3);
     }
 }
+
 
 public class PlutoMechanism
 {
@@ -360,6 +810,7 @@ public class PlutoMechanism
     public string side { get; private set; }
     public bool promCompleted { get; private set; }
     public bool aromCompleted { get; private set; }
+    public bool apromCompleted { get; private set; }
     public ROM oldRom { get; private set; }
     public ROM newRom { get; private set; }
     public ROM currRom { get => newRom.isSet ? newRom : (oldRom.isSet ? oldRom : null); }
@@ -367,8 +818,10 @@ public class PlutoMechanism
     // Trial details for the mechanism.
     public int trialNumberDay { get; private set; }
     public int trialNumberSession { get; private set; }
+    public int totalTrialNumber { get; private set; }
+    
 
-    public PlutoMechanism(string name, string side)
+    public PlutoMechanism(string name, string side, int sessno)
     {
         this.name = name?.ToUpper() ?? string.Empty;
         this.side = side;
@@ -376,20 +829,28 @@ public class PlutoMechanism
         newRom = new ROM();
         promCompleted = false;
         aromCompleted = false;
+        apromCompleted = false;
         this.side = side;
         currSpeed = -1f;
-        UpdateTrialNumbers();
+        UpdateTrialNumbers(sessno);
     }
 
     public bool IsMechanism(string mechName) => string.Equals(name, mechName, StringComparison.OrdinalIgnoreCase);
 
     public bool IsSide(string sideName) => string.Equals(side, sideName, StringComparison.OrdinalIgnoreCase);
 
-    public bool IsSpeedUpdated() => currSpeed < 0;
+    public bool IsSpeedUpdated() => currSpeed > 0;
+    
 
-    public float[] CurrentArom => currRom == null? null : new float[] { currRom.aromMin, currRom.aromMax };
-    public float[] CurrentProm => currRom == null? null : new float[] { currRom.promMin, currRom.promMax };
+    public void NextTrail()
+    {
+        trialNumberDay += 1;
+        trialNumberSession += 1;
+    }
 
+    public float[] CurrentArom => currRom == null ? null : new float[] { currRom.aromMin, currRom.aromMax };
+    public float[] CurrentProm => currRom == null ? null : new float[] { currRom.promMin, currRom.promMax };
+    public float[] CurrentAProm => currRom == null ? null : new float[] { currRom.apromMin, currRom.apromMax };
     public void ResetPromValues()
     {
         newRom.SetProm(0, 0);
@@ -400,6 +861,11 @@ public class PlutoMechanism
     {
         newRom.SetArom(0, 0);
         aromCompleted = false;
+    }
+    public void ResetAPromValues()
+    {
+        newRom.SetAProm(0, 0);
+        apromCompleted = false;
     }
 
     public void SetNewPromValues(float pmin, float pmax)
@@ -419,174 +885,62 @@ public class PlutoMechanism
         if (amin != 0 || amax != 0) aromCompleted = true;
     }
 
+    public void SetNewAPromValues(float apmin, float apmax)
+    {
+        newRom.SetAProm(apmin, apmax);
+        if (apmin != 0 || apmax != 0) apromCompleted = true;
+    }
+
     public void SaveAssessmentData()
     {
-        if (promCompleted && aromCompleted)
+        if (promCompleted && aromCompleted && apromCompleted)
         {
             // Save the new ROM values to the file.
             newRom.WriteToAssessmentFile();
         }
     }
-
-    public void UpdateSpeed()
-    {
-        // Read the mechanism file.
-        string fileName = DataManager.GetMechFileName(this.name);
-        bool _updateFile = false;
-        // Create file if needed.
-        if (!File.Exists(fileName))
-        {
-            using (var writer = new StreamWriter(fileName, false, Encoding.UTF8))
-            {
-                writer.WriteLine("DateTime,Speed");
-            }
-        }
-        // Read the file and get the most recent speed value.
-        DataTable speedData = DataManager.loadCSV(fileName);
-        // Check the number of rows.
-
-        // If the last line is empty, set default value for the speed.
-        if (speedData.Rows.Count ==0)
-        {
-            currSpeed = DefaultMechanismSpeeds[name];
-            _updateFile = true;
-        }
-        else
-        {
-            // Get datetime from the last row.
-            DateTime lastDate = DateTime.ParseExact(
-                speedData.Rows[speedData.Rows.Count - 1].Field<string>("DateTime"),
-                "dd-MM-yyyy HH:mm:ss",
-                CultureInfo.InvariantCulture
-            );
-            if (lastDate.Date == DateTime.Now.Date)
-            {
-                // Set the speed to that of the last row.
-                currSpeed = float.Parse(speedData.Rows[speedData.Rows.Count - 1].Field<string>("Speed"));
-            }
-            else
-            {
-                // TODO
-                // Call the update function to compute the new game speed.
-                // For now this is set to default, but this will need to changed.
-                // If the last date is not today, set default value for the speed.
-                currSpeed = DefaultMechanismSpeeds[name];
-                _updateFile = true;
-            }
-        }
-        // Update file?
-        if (_updateFile)
-        {
-            // Write the new speed to the file.
-            using (StreamWriter file = new StreamWriter(fileName, true))
-            {
-                file.WriteLine(string.Join(",", new string[] { DateTime.Now.ToString(), currSpeed.ToString() }));
-            }
-        }
-    }
-
     /*
      * Function to update the trial numbers for the day and session for the mechanism for today.
      */
-    public void UpdateTrialNumbers()
+    public void UpdateTrialNumbers(int sessno)
     {
         // Get the last row for the today, for the selected mechanism.
-        var lastRow = AppData.Instance.userData.dTableSession.AsEnumerable()?
-            .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
-            .Where(row => row.Field<string>("Mechanism") == this.name)
-            .OrderByDescending(row => DateTime.ParseExact(row.Field<string>("DateTime"), "dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture))
-            .FirstOrDefault();
-        // Check if the last row is null.
-        if (lastRow == null)
+        var selRows = AppData.Instance.userData.dTableSession.AsEnumerable()?
+            .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
+            .Where(row => row.Field<string>("Mechanism") == this.name);
+
+        // Check if the selected rows is null.
+        if (selRows.Count() == 0)
         {
             // Set the trial numbers to 1.
             trialNumberDay = 0;
             trialNumberSession = 0;
             return;
         }
-        else
+        // Get the trial number as the maximum number for the trialNumber Day.
+        trialNumberDay = selRows.Max(row => Convert.ToInt32(row.Field<string>("TrialNumberDay")));
+
+        // Now let's get the session number for the current session.
+        selRows = AppData.Instance.userData.dTableSession.AsEnumerable()?
+            .Where(row => DateTime.ParseExact(row.Field<string>("DateTime"), DataManager.DATEFORMAT, CultureInfo.InvariantCulture).Date == DateTime.Now.Date)
+            .Where(row => Convert.ToInt32(row.Field<string>("SessionNumber")) == sessno)
+            .Where(row => row.Field<string>("Mechanism") == this.name);
+        if (selRows.Count() == 0)
         {
-            // Last row is not null.
-            // Get the trial numbers from the last row.
-            trialNumberDay = Convert.ToInt32(lastRow.Field<string>("TrialNumberDay"));
-            trialNumberSession = Convert.ToInt32(lastRow.Field<string>("TrialNumberSession"));
+            // Set the trial numbers to 1.
+            trialNumberSession = 0;
+            return;
         }
+        // Get the maximum trial number for the session.
+        UnityEngine.Debug.Log(selRows.Count());
+        trialNumberSession = selRows.Max(row => Convert.ToInt32(row.Field<string>("TrialNumberSession")));
     }
 }
-
-/// <summary>
-/// This class contains all the necessary information to run the assessment scene.
-/// </summary>
-//public class AssessmentData
-//{
-//    public string mechanism { get; private set; }
-//    public bool promCompleted { get; private set; }
-//    public bool aromCompleted { get; private set; }
-//    public ROM oldRom { get; private set; }
-//    public ROM newRom { get; private set; }
-//    public string side { get; private set; }
-
-//    public AssessmentData(string mech, string side)
-//    {
-//        mechanism = mech;
-//        oldRom = new ROM(mech);
-//        newRom = new ROM();
-//        promCompleted = false;
-//        aromCompleted = false;
-//        this.side = side;
-//    }
-//    public void ResetPromValues()
-//    {
-//        newRom.promMin = 0;
-//        newRom.promMax = 0;
-//        promCompleted = false;
-//    }
-
-//    public void ResetAromValues()
-//    {
-//        newRom.aromMin = 0;
-//        newRom.aromMax = 0;
-//        aromCompleted = false;
-//    }
-
-//    public void SetNewPromValues(float pmin, float pmax)
-//    {
-//        newRom.promMin = pmin;
-//        newRom.promMax = pmax;
-//        if (pmin != 0 || pmax != 0)
-//        {
-//            promCompleted = true;
-
-//        }
-
-//    }
-
-//    public void SetNewAromValues(float amin, float amax)
-//    {
-//        newRom.aromMin = amin;
-//        newRom.aromMax = amax;
-//        if (amin != 0 || amax != 0)
-//        {
-//            aromCompleted = true;
-//        }
-
-//    }
-
-//    public void SaveAssessmentData()
-//    {
-//        if (promCompleted && aromCompleted)
-//        {
-//            // Save the new ROM values to the file.
-//            newRom.WriteToAssessmentFile();
-//        }
-
-//    }
-//}
 
 public class ROM
 {
     public static string[] FILEHEADER = new string[] {
-        "DateTime", "PromMin", "PromMax", "AromMin", "AromMax"
+        "DateTime", "PromMin", "PromMax", "AromMin", "AromMax","APromMin","APromMax"
     };
     // Class attributes to store data read from the file
     public string datetime;
@@ -594,6 +948,8 @@ public class ROM
     public float promMax { get; private set; }
     public float aromMin { get; private set; }
     public float aromMax { get; private set; }
+    public float apromMin { get; private set; }
+    public float apromMax { get; private set; }
     public string mechanism { get; private set; }
     public bool isAromSet { get => aromMin != 0 || aromMax != 0; }
     public bool isPromSet { get => promMin != 0 || promMax != 0; }
@@ -612,6 +968,8 @@ public class ROM
             promMax = 0;
             aromMin = 0;
             aromMax = 0;
+            apromMin = 0;
+            apromMax = 0;
         }
     }
 
@@ -632,6 +990,8 @@ public class ROM
         promMax = 0;
         aromMin = 0;
         aromMax = 0;
+        apromMin = 0;
+        apromMax = 0;
         mechanism = null;
         datetime = null;
     }
@@ -651,13 +1011,20 @@ public class ROM
         aromMax = max;
         datetime = DateTime.Now.ToString();
     }
+    public void SetAProm(float min, float max)
+    {
+        apromMin = min;
+        apromMax = max;
+        datetime = DateTime.Now.ToString();
+    }
+
 
     public void WriteToAssessmentFile()
     {
-        string fileName = DataManager.GetRomFileName(mechanism);;
+        string fileName = DataManager.GetRomFileName(mechanism); ;
         using (StreamWriter file = new StreamWriter(fileName, true))
         {
-            file.WriteLine(string.Join(",", new string[] { datetime, promMin.ToString(), promMax.ToString(), aromMin.ToString(), aromMax.ToString() }));
+            file.WriteLine(string.Join(",", new string[] { datetime, promMin.ToString(), promMax.ToString(), aromMin.ToString(), aromMax.ToString(), apromMin.ToString(), apromMax.ToString() }));
         }
     }
 
@@ -684,6 +1051,8 @@ public class ROM
             promMax = 0;
             aromMin = 0;
             aromMax = 0;
+            apromMin = 0;
+            apromMax = 0;
             return;
         }
         // Assign ROM from the last row.
@@ -693,206 +1062,8 @@ public class ROM
         promMax = float.Parse(romData.Rows[romData.Rows.Count - 1].Field<string>("PromMax"));
         aromMin = float.Parse(romData.Rows[romData.Rows.Count - 1].Field<string>("AromMin"));
         aromMax = float.Parse(romData.Rows[romData.Rows.Count - 1].Field<string>("AromMax"));
-    }
-}
-
-/*
- * AAN Controller for HOMER
- */
-// public class AANController : HOMERPlutoAANController
-// {   
-//     public const float BOUNDARY = 0.9f;
-//     // Other variables for logging
-//     private int sessNo;
-//     private int trialNoDay;
-//     private int trialNoSess;
-//     // Logging realted variables.
-//     private string  adaptFileName = null;
-//     private StreamWriter execFileWriter = null;
-
-//     private AANController(int sessNo, PlutoMechanism mechanism, float[] aRomValue, float[] pRomValue) : base(aRomValue, pRomValue, BOUNDARY)
-//     {
-//         // If AROM or PROM is null, then this is a null initialization.
-//         if (aRomValue == null || pRomValue == null) return;
-//     }
-
-//     public void StartNewTrial(float actual, float target, float maxDur)
-//     {
-//         SetNewTrialDetails(actual, target, maxDur);
-//         //
-//     }
-// }
-
-/// <summary>
-/// Stores global game-related data and settings.
-/// </summary>
-public static class gameData
-{
-    // Assessment check
-    public static bool isPROMcompleted = false;
-    public static bool isAROMcompleted = false;
-    // AAN controller check
-    public static bool isBallReached = false;
-    public static bool targetSpwan = false;
-    public static bool isAROMEnabled = false;
-    // Game
-    public static bool isGameLogging;
-    public static string game;
-    public static int gameScore;
-    public static int reps;
-    public static int playerScore;
-    public static int enemyScore;
-    public static string playerPos = "0";
-    public static string playerPosition = "0";
-    public static string enemyPos = "0";
-    public static string playerHit = "0";
-    public static string enemyHit = "0";
-    public static string wallBounce = "0";
-    public static string enemyFail = "0";
-    public static string playerFail = "0";
-    public static int winningScore = 3;
-    public static float moveTime;
-    public static readonly string[] pongEvents = new string[] { "moving", "wallBounce", "playerHit", "enemyHit", "playerFail", "enemyFail" };
-    public static readonly string[] hatEvents = new string[] { "moving", "BallCaught", "BombCaught", "BallMissed", "BombMissed" };
-    public static readonly string[] tukEvents = new string[] { "moving", "collided", "passed" };
-    public static int events;
-    public static string TargetPos;
-    public static float successRate;
-    public static float gameSpeedTT;
-    public static float gameSpeedPP;
-    public static float gameSpeedHT;
-    public static float predictedHitY;
-    public static bool setNeutral = false;
-    private static DataLogger dataLog;
-    private static readonly string[] gameHeader = new string[] {
-        "time","controltype","error","buttonState","angle","control",
-        "target","playerPosY","enemyPosY","events","playerScore","enemyScore"
-    };
-    private static readonly string[] tukTukHeader = new string[] {
-        "time","controltype","error","buttonState","angle","control",
-        "target","playerPosx","events","playerScore"
-    };
-    public static bool isLogging { get; private set; }
-    public static bool moving = true; // used to manipulate events in HAT TRICK
-
-    static public void StartDataLog(string fname)
-    {
-        if (dataLog != null)
-        {
-            StopLogging();
-        }
-        // Start new logger
-        if (AppData.Instance.selectedGame == "PINGPONG")
-        {
-            if (fname != "")
-            {
-                string instructionLine = "0 - moving, 1 - wallBounce, 2 - playerHit, 3 - enemyHit, 4 - playerFail, 5 - enemyFail\n";
-                string headerWithInstructions = instructionLine + String.Join(", ", gameHeader) + "\n";
-                dataLog = new DataLogger(fname, headerWithInstructions);
-                isLogging = true;
-            }
-            else
-            {
-                dataLog = null;
-                isLogging = false;
-            }
-        }
-        else if (AppData.Instance.selectedGame == "HATTRICK")
-        {
-            if (fname != "")
-            {
-                string instructionLine = "0 - moving, 1 - BallCaught, 2 - BombCaught, 3 - BallMissed, 4 - BombMissed\n";
-                string headerWithInstructions = instructionLine + String.Join(", ", tukTukHeader) + "\n";
-                dataLog = new DataLogger(fname, headerWithInstructions);
-                isLogging = true;
-            }
-            else
-            {
-                dataLog = null;
-                isLogging = false;
-            }
-        }
-        else if (AppData.Instance.selectedGame == "TUKTUK")
-        {
-            if (fname != "")
-            {
-                string instructionLine = "0 - moving, 1 - collided, 2 - passed\n";
-                string headerWithInstructions = instructionLine + String.Join(", ", tukTukHeader) + "\n";
-                dataLog = new DataLogger(fname, headerWithInstructions);
-                isLogging = true;
-            }
-            else
-            {
-                dataLog = null;
-                isLogging = false;
-            }
-        }
-    }
-
-    static public void StopLogging()
-    {
-        if (dataLog != null)
-        {
-            UnityEngine.Debug.Log("Null log not");
-            dataLog.stopDataLog(true);
-            dataLog = null;
-            isLogging = false;
-        }
-        else
-            UnityEngine.Debug.Log("Null log");
-    }
-
-    static public void LogData()
-    {
-        // Log only if the current data is SENSORSTREAM
-        if (PlutoComm.SENSORNUMBER[PlutoComm.dataType] == 5)
-        {
-            string[] _data = new string[] {
-               PlutoComm.currentTime.ToString(),
-               PlutoComm.CONTROLTYPE[PlutoComm.controlType],
-               PlutoComm.errorStatus.ToString(),
-               PlutoComm.button.ToString(),
-               PlutoComm.angle.ToString("G17"),
-               PlutoComm.control.ToString("G17"),
-               PlutoComm.target.ToString("G17"),
-               playerPos,
-               enemyPos,
-               gameData.events.ToString("F2"),
-               gameData.playerScore.ToString("F2"),
-               gameData.enemyScore.ToString("F2")
-            };
-            string _dstring = String.Join(", ", _data);
-            _dstring += "\n";
-            dataLog.logData(_dstring);
-        }
-    }
-    static public void LogDataHT()
-    {
-        UnityEngine.Debug.Log("Data Log: " + dataLog);
-        UnityEngine.Debug.Log("Data Log: " + dataLog);
-        if (PlutoComm.SENSORNUMBER[PlutoComm.dataType] == 5)
-        {
-            string[] _data = new string[] {
-               PlutoComm.currentTime.ToString(),
-               PlutoComm.CONTROLTYPE[PlutoComm.controlType],
-               PlutoComm.errorStatus.ToString(),
-               PlutoComm.button.ToString(),
-               PlutoComm.angle.ToString("G17"),
-               PlutoComm.control.ToString("G17"),
-               PlutoComm.target.ToString("G17"),
-               playerPos,
-               gameData.events.ToString("F2"),
-               gameData.gameScore.ToString("F2")
-            };
-            string _dstring = String.Join(", ", _data);
-            _dstring += "\n";
-            dataLog.logData(_dstring);
-        }
-        else
-        {
-            UnityEngine.Debug.Log("PlutoComm:" + PlutoComm.OUTDATATYPE[PlutoComm.dataType]);
-            UnityEngine.Debug.Log("PlutoComm:" + PlutoComm.dataType);
-        }
+        apromMin = float.Parse(romData.Rows[romData.Rows.Count - 1].Field<string>("APromMin"));
+        apromMax = float.Parse(romData.Rows[romData.Rows.Count - 1].Field<string>("APromMax"));
     }
 }
 
@@ -937,250 +1108,6 @@ public class DataLogger
         if (fileData != null)
         {
             fileData.Append(data);
-        }
-    }
-}
-
-
-public class AANDataLogger
-{
-    // AAN class
-    private HOMERPlutoAANController aanCtrler;
-
-    // Logging related variables
-    private string fileNamePrefix = null;
-    private string logRawFileName = null;
-    private StreamWriter logRawFile = null;
-    private string logAdaptFileName = null;
-    private StreamWriter logAdaptFile = null;
-    private string logAanFileName = null;
-    private StreamWriter logAanFile = null;
-
-    private uint trialNo;
-
-    public AANDataLogger(HOMERPlutoAANController controller)
-    {
-        aanCtrler = controller;
-        PlutoComm.OnNewPlutoData += onNewPlutoData;
-    }
-
-    public void onNewPlutoData()
-    {
-        // Log data if needed. Else move on.
-        if (logRawFile == null) return;
-
-        // Log data
-        String[] rowcomps = new string[]
-        {
-            $"{PlutoComm.runTime}",
-            $"{PlutoComm.packetNumber}",
-            $"{PlutoComm.status}",
-            $"{PlutoComm.dataType}",
-            $"{PlutoComm.errorStatus}",
-            $"{PlutoComm.controlType}",
-            $"{PlutoComm.calibration}",
-            $"{PlutoComm.mechanism}",
-            $"{PlutoComm.button}",
-            $"{PlutoComm.angle}",
-            $"{PlutoComm.torque}",
-            $"{PlutoComm.control}",
-            $"{PlutoComm.controlBound}",
-            $"{PlutoComm.controlDir}",
-            $"{PlutoComm.target}",
-            $"{PlutoComm.desired}",
-            $"{PlutoComm.err}",
-            $"{PlutoComm.errDiff}",
-            $"{PlutoComm.errSum}"
-        };
-        if (logRawFile != null)
-        {
-            logRawFile.WriteLine(String.Join(", ", rowcomps));
-        }
-    }
-
-    public void WriteAanStateInforRow()
-    {
-        // Log data if needed. Else move on.
-        if (logAanFile == null) return;
-
-        // Log data
-        float[] _aantgtvals = aanCtrler.GetNewAanTarget();
-        string _aantgtdetails = _aantgtvals == null ? "" : $"{_aantgtvals[0]:F2}|{_aantgtvals[1]:F2}|{_aantgtvals[2]:F2}|{_aantgtvals[3]:F2}";
-        int _stchng = aanCtrler.stateChange ? 1 : 0;
-        String[] rowcomps = new string[]
-        {
-            $"{PlutoComm.runTime}",
-            $"{aanCtrler.state}",
-            $"{_stchng}",
-            $"{_aantgtdetails}"
-        };
-        if (logAanFile != null)
-        {
-            logAanFile.WriteLine(String.Join(", ", rowcomps));
-        }
-        UnityEngine.Debug.Log("Writing ");
-    }
-
-    private void OnDataLogChange()
-    {
-        // Close file.
-        CloseRawLogFile();
-        CloseAdaptLogFile();
-        logRawFile = null;
-        logAdaptFile = null;
-        fileNamePrefix = null;
-    }
-
-    public void UpdateLogFiles(uint trialNumber)
-    {
-        if (fileNamePrefix == null)
-        {
-            fileNamePrefix = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}";
-        }
-        CreateDirectoryIfNeeded(AppData.Instance._dataLogDir + "\\");
-        // Create the adaptation log file.
-        if (logAdaptFile == null)
-        {
-            CreateAdaptLogFile();
-        }
-        trialNo = trialNumber;
-        //// Create the raw log file after closing the current file.
-        //CloseRawLogFile();
-        //CreateRawLogFile();
-        // Create the raw and AAN log file after closing the current file.
-        CloseRawAndAanLogFile();
-        CreateRawAndAanLogFile(trialNo);
-    }
-
-
-    public void CreateRawAndAanLogFile(uint trialNo)
-    {
-        string _writetime = $"{DateTime.Now:yyyy/MM/dd HH-mm-ss.ffffff}";
-        // Raw log file
-        // Set the file name.
-        logRawFileName = $"rawlogfile_{trialNo:D3}.csv";
-        logRawFile = new StreamWriter(AppData.Instance._dataLogDir + "\\" + logRawFileName, false);
-        // Write the header row.
-        //logRawFile.WriteLine($"DeviceID = {PlutoComm.deviceId}");
-        //logRawFile.WriteLine($"FirmwareVersion = {PlutoComm.version}");
-        //logRawFile.WriteLine($"CompileDate = {PlutoComm.compileDate}");
-        //logRawFile.WriteLine($"Actuated = {PlutoComm.actuated}");
-        logRawFile.WriteLine($"Start Datetime = {_writetime}");
-        string[] headernames = { "time", "packetno", "status", "datatype", "errorstatus", "controltype", "calibration",
-            "mechanism", "button", "angle", "torque", "control", "controlbound", "controldir", "target", "desired",
-            "error", "errordiff", "errorsum"
-        };
-        logRawFile.WriteLine(String.Join(", ", headernames));
-
-        // AAN log file
-        // Set the file name.
-        logAanFileName = $"aanlogfile_{trialNo:D3}.csv";
-        logAanFile = new StreamWriter(AppData.Instance._dataLogDir + "\\" + logAanFileName, false);
-        // Write the header row.
-        //logAanFile.WriteLine($"DeviceID = {PlutoComm.deviceId}");
-        //logAanFile.WriteLine($"FirmwareVersion = {PlutoComm.version}");
-        //logAanFile.WriteLine($"CompileDate = {PlutoComm.compileDate}");
-        //logAanFile.WriteLine($"Actuated = {PlutoComm.actuated}");
-        logAanFile.WriteLine($"Start Datetime = {_writetime}");
-        headernames = new string[] { "time", "aanstate", "aanstatechange", "aantargetdetails" };
-        logAanFile.WriteLine(String.Join(", ", headernames));
-    }
-
-    public void CreateAdaptLogFile()
-    {
-        // Set the file name.
-        logAdaptFileName = $"adaptlogfile.csv";
-        logAdaptFile = new StreamWriter(AppData.Instance._dataLogDir + "\\" + logAdaptFileName, false);
-        // Write the header row.
-        //logAdaptFile.WriteLine($"DeviceID = {PlutoComm.deviceId}");
-        //logAdaptFile.WriteLine($"FirmwareVersion = {PlutoComm.version}");
-        //logAdaptFile.WriteLine($"CompileDate = {PlutoComm.compileDate}");
-        //logAdaptFile.WriteLine($"Actuated = {PlutoComm.actuated}");
-        logAdaptFile.WriteLine($"Start Datetime = {DateTime.Now:yyyy/MM/dd HH-mm-ss.ffffff}");
-        logAdaptFile.WriteLine("trialno, targetposition, initialposition, success, successrate, controlbound, controldir, filename");
-    }
-
-    public void WriteTrialRowInfo(byte successfailure)
-    {
-        // Log data if needed. Else move on.
-        if (logAdaptFile == null) return;
-
-        // Log data
-        String[] rowcomps = new string[]
-        {
-            $"{trialNo}",
-            $"{aanCtrler.targetPosition}",
-            $"{aanCtrler.initialPosition}",
-            $"{successfailure}",
-         //   $"{currControlDir}",
-            $"{logRawFileName}"
-        };
-        if (logAdaptFile != null)
-        {
-            logAdaptFile.WriteLine(String.Join(", ", rowcomps));
-        }
-    }
-
-    private void CloseRawLogFile()
-    {
-        if (logRawFile != null)
-        {
-            // Close the file properly and create a new handle.
-            logRawFile.Close();
-        }
-        logRawFileName = null;
-        logRawFile = null;
-    }
-
-    private void CloseRawAndAanLogFile()
-    {
-        // Close raw file
-        if (logRawFile != null)
-        {
-            // Close the file properly and create a new handle.
-            logRawFile.Close();
-        }
-        logRawFileName = null;
-        logRawFile = null;
-        // Close Aan file
-        if (logAanFile != null)
-        {
-            // Close the file properly and create a new handle.
-            logAanFile.Close();
-        }
-        logAanFileName = null;
-        logAanFile = null;
-    }
-
-    private void CloseAdaptLogFile()
-    {
-        if (logAdaptFile != null)
-        {
-            // Close the file properly and create a new handle.
-            logAdaptFile.Close();
-
-            // Close any raw file that is open.
-            CloseRawLogFile();
-
-            // Clear filename prefix.
-            fileNamePrefix = null;
-        }
-        logAdaptFileName = null;
-        logAdaptFile = null;
-    }
-
-    private void CreateDirectoryIfNeeded(string dirname)
-    {
-        // Ensure the directory exists
-        string directoryPath = Path.GetDirectoryName(dirname);
-        if (!Directory.Exists(directoryPath))
-        {
-            Directory.CreateDirectory(directoryPath);
-            UnityEngine.Debug.Log("Directory created");
-        }
-        else
-        {
-            UnityEngine.Debug.Log("already exist");
         }
     }
 }

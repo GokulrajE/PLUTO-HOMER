@@ -1,18 +1,12 @@
-using System; 
-using System.Collections;
-using System.Collections.Generic;
-using System.Data;
-using System.Runtime.InteropServices.ComTypes;
+using System;
 using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
-using System.Linq;
-using System.Globalization;
-using Unity.VisualScripting;
 using UnityEngine.SceneManagement;
-using System.Text.RegularExpressions;
-using PlutoNeuroRehabLibrary;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
 
 public class welcomSceneHandler : MonoBehaviour
 {
@@ -33,12 +27,54 @@ public class welcomSceneHandler : MonoBehaviour
     private bool attachPlutoButtonEvent = false;
     bool changeScene = false;
 
-    // Start is called before the first frame update
     void Start()
     {
-        // Check if the directory exists
-        if (!Directory.Exists(DataManager.basePath)) Directory.CreateDirectory(DataManager.basePath);
-        if (!File.Exists(DataManager.configFile)) SceneManager.LoadScene("CONFIG");
+        if (string.IsNullOrEmpty(DataManager.basePath))
+        {
+            Debug.Log(DataManager.userIdPath);
+            Debug.Log("basePath: " + DataManager.basePath);
+Debug.Log("userID: " + AppData.Instance.userID);
+Debug.Log("configFile path: " + DataManager.configFile);
+
+            DataManager.basePath = DataManager.FixPath(Path.Combine(DataManager.userIdPath, "data"));
+            Debug.LogWarning("basePath was empty. Setting fallback path: " + DataManager.basePath);
+        }
+
+
+        Debug.Log("path:" + DataManager.basePath);
+        if (!Directory.Exists(DataManager.basePath))
+        {
+            SceneManager.LoadScene("CONFIG");
+            return;
+        }
+          string filePath = @"C:/comport.txt";
+
+        // Optional: Create a default file if it doesn't exist
+        if (File.Exists(filePath))
+        {
+            string com = File.ReadAllText(filePath);
+            AppData.Instance.setComport(com);
+        }
+
+        // Get all subdirectories excluding metadata
+        var validUserDirs = Directory.GetDirectories(DataManager.basePath)
+        .Select(Path.GetFileName)
+        .Where(name => !name.ToLower().Contains("meta"))
+        .ToList();
+
+
+        if (validUserDirs.Count == 1) 
+        {
+            AppData.Instance.setUser(validUserDirs[0]);
+            DataManager.setUserId(AppData.Instance.userID);
+        }
+
+        if (!File.Exists(DataManager.configFile)) 
+        {
+            Debug.Log("running");
+            SceneManager.LoadScene("CONFIG");
+            return;
+        }
         
         // Initialize.
         AppData.Instance.Initialize(SceneManager.GetActiveScene().name);
@@ -52,6 +88,16 @@ public class welcomSceneHandler : MonoBehaviour
             UpdateUserData();
             UpdatePieChart();
         }
+        Task.Run(() =>  // Run in a background task
+            {
+            if (!awsManager.IsTaskScheduled(awsManager.taskName))
+            {
+                awsManager.ScheduleTask();
+            }
+            awsManager.RunAWSpythonScript();
+
+            });
+       
     }
 
     void Update()
@@ -87,6 +133,9 @@ public class welcomSceneHandler : MonoBehaviour
         timeRemainingToday.text = $"{AppData.Instance.userData.totalMoveTimeRemaining} min";
         todaysDay.text = AppData.Instance.userData.getCurrentDayOfTraining().ToString();
         todaysDate.text = DateTime.Now.ToString("ddd, dd-MM-yyyy");
+        if (!File.Exists(awsManager.filePathUploadStatus))
+            awsManager.createFile(userName.text);
+        
     }
 
     private void UpdatePieChart()
